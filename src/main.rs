@@ -1,20 +1,13 @@
-fn square_loop(mut x: f64) {
-    loop {
-        x = x * x;
-        //println!("{}", x);
-    }
-}
-
-fn square_add_loop(c: f64) {
-    let mut x = 0.;
-    loop {
-        x = x * x + c;
-        //println!("{}", x);
-    }
-}
-
+extern crate crossbeam;
+extern crate image;
 extern crate num;
+
+use image::ColorType;
+use image::png::PNGEncoder;
 use num::Complex;
+use std::fs::File;
+use std::io::Write;
+use std::str::FromStr;
 
 /// Try to determine if `c` is in the Mandebrot set, using at most `limit` iterations to decide.
 ///
@@ -34,8 +27,6 @@ fn escape_time(c: Complex<f64>, limit: u32) -> Option<u32> {
 
     None
 }
-
-use std::str::FromStr;
 
 /// Parse the string `s` as a coodinate pair, like `"400x600"` or `"1.0,0.5"`.
 ///
@@ -155,12 +146,6 @@ fn render(pixels: &mut[u8],
     }
 }
 
-extern crate image;
-
-use image::ColorType;
-use image::png::PNGEncoder;
-use std::fs::File;
-
 /// Write the buffer `pixels`, whose dimensions are given by
 /// `bounds`, to the file named `filename`.
 fn write_image(filename: &str, pixels: &[u8], bounds: (usize, usize))
@@ -176,14 +161,17 @@ fn write_image(filename: &str, pixels: &[u8], bounds: (usize, usize))
     Ok(())
 }
 
-use std::io::Write;
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() != 5 {
         writeln!(std::io::stderr(),
-                 "Usage: mandelbrot FILE PIXELS UPPERLEFT LOWERRIGHT")
+                 "Usage: {} FILE PIXELS UPPERLEFT LOWERRIGHT",
+                 args[0])
+            .unwrap();
+        writeln!(std::io::stderr(),
+                 "example: {} a.png 1000x750 -1.20,0.35 -1,0.20",
+                 args[0])
             .unwrap();
         std::process::exit(1);
     }
@@ -196,9 +184,32 @@ fn main() {
 
     let mut pixels = vec![0; bounds.0 * bounds.1];
 
-    render(&mut pixels, bounds, upper_left, lower_right);
+    let threads = 8;
+    let rows_per_band = bounds.1 / threads + 1;
+
+    //render(&mut pixels, bounds, upper_left, lower_right);
+    {
+        let bands: Vec<&mut [u8]> =
+            pixels.chunks_mut(rows_per_band * bounds.0).collect();
+        crossbeam::scope(|spawner| {
+            for (i, band) in bands.into_iter().enumerate() {
+                let top = rows_per_band * i;
+                let height = band.len() / bounds.0;
+                let band_bounds = (bounds.0, height);
+                let band_upper_left =
+                    pixel_to_point(bounds, (0,top), upper_left, lower_right);
+                let band_lower_right = 
+                    pixel_to_point(bounds, (bounds.0, top + height),
+                                   upper_left, lower_right);
+                println!("{:?}, {:?}, {:?}", band_bounds, band_upper_left, band_lower_right);
+
+                spawner.spawn(move || {
+                    render(band, band_bounds, band_upper_left, band_lower_right);
+                });
+            }
+        });
+    }
 
     write_image(&args[1], &pixels, bounds)
         .expect("error writing PNG file");
 }
-
